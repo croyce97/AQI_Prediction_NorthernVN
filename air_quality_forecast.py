@@ -1,194 +1,158 @@
-# Import các thư viện cần thiết
+# Import necessary libraries
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
-import seaborn as sns  # Tùy chọn, dùng để vẽ biểu đồ nâng cao
+import seaborn as sns
 from sklearn.model_selection import train_test_split
-from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
-from sklearn.linear_model import LinearRegression
-from sklearn.ensemble import RandomForestRegressor
-import folium
-import warnings
-warnings.filterwarnings('ignore')
+from sklearn.metrics import mean_squared_error, r2_score
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import Dense
+from tensorflow.keras.optimizers import Adam
 
-# =============================================================================
-# BƯỚC 1: Đọc dữ liệu và tiền xử lý
-# =============================================================================
+# ---------------------------
+# 1. Read and analyze data
+# ---------------------------
+# Read data from CSV file
+data = pd.read_csv('data_onkk.csv')
 
-# Đọc dữ liệu từ file CSV
-df = pd.read_csv('data_onkk.csv')
+# Print data information
+print("Data information:")
+print(data.info())
 
-# In thông tin ban đầu để kiểm tra cấu trúc dữ liệu
-print("Thông tin dữ liệu ban đầu:")
-print(df.head())
-print("\nDanh sách các cột:", df.columns.tolist())
+# Print the first 5 rows of the dataset
+print("\nFirst 5 rows of data:")
+print(data.head())
 
-# Hàm tính AQI từ nồng độ PM2.5 theo tiêu chuẩn US EPA
-def compute_aqi_pm25(concentration):
-    """
-    Tính chỉ số AQI từ nồng độ PM2.5 theo các ngưỡng của US EPA.
-    """
-    if concentration < 0:
-        return np.nan
-    elif concentration <= 12.0:
-        aqi = (50 / 12.0) * concentration
-    elif concentration <= 35.4:
-        aqi = ((100 - 51) / (35.4 - 12.1)) * (concentration - 12.1) + 51
-    elif concentration <= 55.4:
-        aqi = ((150 - 101) / (55.4 - 35.5)) * (concentration - 35.5) + 101
-    elif concentration <= 150.4:
-        aqi = ((200 - 151) / (150.4 - 55.5)) * (concentration - 55.5) + 151
-    elif concentration <= 250.4:
-        aqi = ((300 - 201) / (250.4 - 150.5)) * (concentration - 150.5) + 201
-    elif concentration <= 350.4:
-        aqi = ((400 - 301) / (350.4 - 250.5)) * (concentration - 250.5) + 301
-    elif concentration <= 500.4:
-        aqi = ((500 - 401) / (500.4 - 350.5)) * (concentration - 350.5) + 401
-    else:
-        aqi = np.nan
-    return aqi
+# Descriptive statistics of the dataset
+print("\nDescriptive statistics:")
+print(data.describe())
 
-# Tính AQI dựa trên cột "pm25"
-if 'pm25' in df.columns:
-    df['AQI'] = df['pm25'].apply(compute_aqi_pm25)
-else:
-    print("Cột 'pm25' không tồn tại, vui lòng kiểm tra lại file dữ liệu.")
+# Check the number of missing values in each column
+print("\nNumber of missing values:")
+print(data.isnull().sum())
 
-# Chuyển đổi cột "time" sang kiểu datetime nếu có
-if 'time' in df.columns:
-    df['time'] = pd.to_datetime(df['time'], errors='coerce')
-    df = df.sort_values('time')
+# ---------------------------
+# 2. Calculate AQI based on PM2.5 concentration
+# ---------------------------
+# Function to calculate AQI based on EPA standards using PM2.5 concentration
+def compute_aqi(pm25):
+    breakpoints = [
+        (0.0, 12.0, 0, 50),
+        (12.1, 35.4, 51, 100),
+        (35.5, 55.4, 101, 150),
+        (55.5, 150.4, 151, 200),
+        (150.5, 250.4, 201, 300),
+        (250.5, 350.4, 301, 400),
+        (350.5, 500.4, 401, 500)
+    ]
+    for C_low, C_high, I_low, I_high in breakpoints:
+        if C_low <= pm25 <= C_high:
+            aqi = ((I_high - I_low) / (C_high - C_low)) * (pm25 - C_low) + I_low
+            return aqi
+    return np.nan  # Return NaN if PM2.5 is out of range
 
-# Hiển thị vài dòng dữ liệu sau khi tính toán AQI
-print("\nDữ liệu sau khi tính toán AQI:")
-print(df.head())
+# Compute the AQI column based on the 'pm25' column
+data['AQI'] = data['pm25'].apply(compute_aqi)
 
-# =============================================================================
-# BƯỚC 2: Khám phá dữ liệu (EDA)
-# =============================================================================
+# Check descriptive statistics for the AQI column
+print("\nDescriptive statistics for AQI column:")
+print(data['AQI'].describe())
 
-if 'time' in df.columns:
-    plt.figure(figsize=(12,6))
-    plt.plot(df['time'], df['pm25'], label='PM2.5')
-    plt.plot(df['time'], df['AQI'], label='AQI')
-    plt.xlabel("Thời gian")
-    plt.ylabel("Giá trị")
-    plt.title("Biểu đồ PM2.5 và AQI theo thời gian")
-    plt.legend()
-    plt.grid(True)
-    plt.show()
+# ---------------------------
+# 3. Visualize the initial data
+# ---------------------------
+# Plot distribution of PM2.5 and AQI
+plt.figure(figsize=(14, 6))
 
-# =============================================================================
-# BƯỚC 3: Xây dựng và đánh giá mô hình dự báo AQI
-# =============================================================================
+plt.subplot(1, 2, 1)
+sns.histplot(data['pm25'], bins=30, kde=True)
+plt.title('PM2.5 distribution')
 
-# Xác định các biến không dùng cho mô hình: time, ID, pm25, AQI, lat, lon
-cols_to_exclude = []
-for col in ['time', 'ID', 'pm25', 'AQI', 'lat', 'lon']:
-    if col in df.columns:
-        cols_to_exclude.append(col)
+plt.subplot(1, 2, 2)
+sns.histplot(data['AQI'], bins=30, kde=True)
+plt.title('AQI distribution')
 
-# Các biến đặc trưng (features) là các cột còn lại
-features = [col for col in df.columns if col not in cols_to_exclude]
-print("\nCác biến đặc trưng được sử dụng cho mô hình:", features)
+plt.tight_layout()
+plt.show()
 
-# Loại bỏ các dòng có giá trị thiếu ở cột AQI và các biến đặc trưng
-df_model = df.dropna(subset=['AQI'] + features)
+# Scatter plot of PM2.5 vs AQI
+plt.figure(figsize=(7, 6))
+sns.scatterplot(x='pm25', y='AQI', data=data)
+plt.xlabel('PM2.5')
+plt.ylabel('AQI')
+plt.title('Scatter plot: PM2.5 vs AQI')
+plt.show()
 
-# Chia dữ liệu thành tập huấn luyện và tập kiểm tra theo thời gian nếu có cột "time"
-if 'time' in df_model.columns:
-    cutoff_time = df_model['time'].quantile(0.8)  # 80% dữ liệu đầu làm train
-    train_data = df_model[df_model['time'] < cutoff_time]
-    test_data = df_model[df_model['time'] >= cutoff_time]
-else:
-    train_data, test_data = train_test_split(df_model, test_size=0.2, random_state=42)
+# ---------------------------
+# 4. Prepare data and split into training (80%) and testing (20%) sets
+# ---------------------------
+# Drop rows with missing values in the AQI column (if any)
+data = data.dropna(subset=['AQI'])
 
-# Xác định X và y cho train và test
-X_train = train_data[features]
-y_train = train_data['AQI']
-X_test = test_data[features]
-y_test = test_data['AQI']
+# Define input variable X (PM2.5) and target variable y (AQI)
+X = data['pm25'].values.reshape(-1, 1)
+y = data['AQI'].values
 
-print("\nSố lượng mẫu - Tập huấn luyện: {}, Tập kiểm tra: {}".format(X_train.shape[0], X_test.shape[0]))
+# Split data into training (80%) and testing (20%) sets
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+print(f"\nTraining set size: {X_train.shape[0]} samples")
+print(f"Testing set size: {X_test.shape[0]} samples")
 
-# --- Mô hình 1: Linear Regression ---
-lr_model = LinearRegression()
-lr_model.fit(X_train, y_train)
-pred_lr = lr_model.predict(X_test)
+# ---------------------------
+# 5. Build and train the machine learning model
+# ---------------------------
+# Build a neural network model with 2 hidden layers
+model = Sequential([
+    Dense(16, activation='relu', input_shape=(1,)),
+    Dense(8, activation='relu'),
+    Dense(1)  # Output: Predicted AQI value
+])
 
-# Đánh giá Linear Regression
-mae_lr = mean_absolute_error(y_test, pred_lr)
-rmse_lr = np.sqrt(mean_squared_error(y_test, pred_lr))
-r2_lr = r2_score(y_test, pred_lr)
+# Compile the model with MSE loss function and Adam optimizer
+model.compile(optimizer=Adam(learning_rate=0.01), loss='mse')
 
-print("\nKết quả mô hình Linear Regression:")
-print("MAE: {:.2f}".format(mae_lr))
-print("RMSE: {:.2f}".format(rmse_lr))
-print("R²: {:.2f}".format(r2_lr))
+# Train the model on the training set, using 20% of the training set as validation data
+history = model.fit(X_train, y_train, epochs=200, batch_size=16, validation_split=0.2, verbose=1)
 
-# --- Mô hình 2: Random Forest Regressor ---
-rf_model = RandomForestRegressor(n_estimators=100, random_state=42)
-rf_model.fit(X_train, y_train)
-pred_rf = rf_model.predict(X_test)
+# ---------------------------
+# 6. Evaluate the model on the test set
+# ---------------------------
+# Predict on the test set
+y_test_pred = model.predict(X_test).flatten()
 
-# Đánh giá Random Forest
-mae_rf = mean_absolute_error(y_test, pred_rf)
-rmse_rf = np.sqrt(mean_squared_error(y_test, pred_rf))
-r2_rf = r2_score(y_test, pred_rf)
+# Compute evaluation metrics
+mse_test = mean_squared_error(y_test, y_test_pred)
+r2_test = r2_score(y_test, y_test_pred)
+print(f"\nMSE on test set: {mse_test:.2f}")
+print(f"R² on test set: {r2_test:.2f}")
 
-print("\nKết quả mô hình Random Forest:")
-print("MAE: {:.2f}".format(mae_rf))
-print("RMSE: {:.2f}".format(rmse_rf))
-print("R²: {:.2f}".format(r2_rf))
+# ---------------------------
+# 7. Visualize the results
+# ---------------------------
+# Predict on the entire dataset for comparison visualization
+y_pred = model.predict(X).flatten()
 
-# Chọn mô hình có hiệu năng tốt hơn (ở đây dựa trên R²; bạn có thể kết hợp thêm các chỉ số khác)
-if r2_rf >= r2_lr:
-    best_model = rf_model
-    best_model_name = "Random Forest"
-else:
-    best_model = lr_model
-    best_model_name = "Linear Regression"
+# Sort data by PM2.5 values for better visualization
+sorted_idx = X.flatten().argsort()
+X_sorted = X.flatten()[sorted_idx]
+y_sorted = y[sorted_idx]
+y_pred_sorted = y_pred[sorted_idx]
 
-print("\nMô hình tốt nhất được chọn:", best_model_name)
+plt.figure(figsize=(10, 6))
+plt.plot(X_sorted, y_sorted, 'o-', label='AQI (Actual)', markersize=4)
+plt.plot(X_sorted, y_pred_sorted, 'r-', label='AQI (Predicted)')
+plt.xlabel('PM2.5')
+plt.ylabel('AQI')
+plt.title('Comparison of actual and predicted AQI (80% training, 20% testing)')
+plt.legend()
+plt.show()
 
-# =============================================================================
-# BƯỚC 4: Dự báo AQI cho ngày tiếp theo
-# =============================================================================
-# Lưu ý: Trong thực tế, để dự báo cho ngày tiếp theo bạn cần có dự báo các thông số đầu vào (khí tượng, địa hình) cho ngày đó.
-# Ở đây, để minh họa, ta sử dụng mẫu cuối cùng của dữ liệu như một đầu vào giả lập cho ngày tiếp theo.
-last_record = df_model.iloc[-1]
-X_new = last_record[features].values.reshape(1, -1)
-forecast_aqi = best_model.predict(X_new)[0]
-
-print("\nDự báo AQI cho ngày tiếp theo (theo mô hình {}): {:.2f}".format(best_model_name, forecast_aqi))
-
-# =============================================================================
-# BƯỚC 5: Hiển thị bản đồ dự báo (sử dụng Folium)
-# =============================================================================
-
-if 'lat' in df.columns and 'lon' in df.columns:
-    # Chọn tọa độ trung tâm cho miền Bắc Việt Nam (ví dụ: Hà Nội)
-    map_center = [21.028511, 105.804817]
-    aqi_map = folium.Map(location=map_center, zoom_start=7)
-
-    # Thêm marker cho từng trạm với thông tin AQI, thời gian và ID
-    for idx, row in df.iterrows():
-        try:
-            lat_val = float(row['lat'])
-            lon_val = float(row['lon'])
-            aqi_val = row['AQI']
-            popup_text = f"ID: {row['ID']}<br>Time: {row['time']}<br>AQI: {aqi_val:.2f}"
-            folium.CircleMarker(location=[lat_val, lon_val],
-                                radius=5,
-                                popup=popup_text,
-                                fill=True,
-                                color='blue',
-                                fill_opacity=0.7).add_to(aqi_map)
-        except Exception as e:
-            continue
-
-    # Lưu bản đồ dưới dạng file HTML
-    aqi_map.save('forecast_map.html')
-    print("\nBản đồ dự báo đã được lưu vào file 'forecast_map.html'. Mở file này trong trình duyệt để xem kết quả.")
-else:
-    print("\nKhông có dữ liệu tọa độ (lat, lon) để hiển thị bản đồ.")
+# Plot Loss over epochs to track training process
+plt.figure(figsize=(10, 6))
+plt.plot(history.history['loss'], label='Training Loss')
+plt.plot(history.history['val_loss'], label='Validation Loss')
+plt.xlabel('Epoch')
+plt.ylabel('Loss (MSE)')
+plt.title('Loss over epochs')
+plt.legend()
+plt.show()
